@@ -1,3 +1,5 @@
+import json
+
 import streamlit as st
 import httpx
 import time
@@ -7,7 +9,7 @@ from dnd_character.classes import CLASSES
 # -----------------------------------------------------------------------------
 # CONFIGURATION
 # -----------------------------------------------------------------------------
-DEFAULT_WEBHOOK = "http://localhost:5678/webhook/rpg-turn"
+DEFAULT_WEBHOOK = ""
 
 # Default model ID (paste any OpenRouter model ID)
 DEFAULT_DM_MODEL = "anthropic/claude-3.5-sonnet"
@@ -65,6 +67,17 @@ with st.sidebar:
     p1_model = st.text_input("Player 1 Model (OpenRouter ID)", value=DEFAULT_PLAYER_MODEL,
                               placeholder="e.g. openai/gpt-4o")
 
+    st.divider()
+    st.subheader("📜 Adventure Setup")
+    adventure_context = st.text_area(
+        "Adventure Premise",
+        value="The party meets at the Rusty Dragon tavern in a small village on the edge of a dark forest. "
+              "Rumors speak of an ancient tomb recently uncovered by a landslide, filled with treasure and danger. "
+              "A mysterious hooded stranger approaches the party with a map and a warning.",
+        height=120,
+        help="Describe the starting scenario. The DM AI will use this as the foundation."
+    )
+
     if st.button("Initialize Game"):
         st.session_state.agents = [
             Agent("Dungeon Master", "DM", dm_model),
@@ -72,6 +85,7 @@ with st.sidebar:
         ]
         st.session_state.game_log = []
         st.session_state.turn_idx = 0
+        st.session_state.adventure_context = adventure_context
         st.session_state.initialized = True
         st.rerun()
 
@@ -105,32 +119,98 @@ for msg in st.session_state.game_log:
             st.write(f"**{msg['name']}:** {msg['content']}")
 
 # Turn Execution
+def build_history_messages(game_log, max_messages=20):
+    """Convert game log into chat-style message history for AI memory."""
+    recent = game_log[-max_messages:] if len(game_log) > max_messages else game_log
+    messages = []
+    for msg in recent:
+        messages.append({
+            "name": msg["name"],
+            "role": msg["role"],
+            "content": msg["content"]
+        })
+    return messages
+
 def process_turn():
     agents = st.session_state.agents
     current_agent = agents[st.session_state.turn_idx % len(agents)]
+    adventure = st.session_state.get("adventure_context", "A D&D adventure begins.")
+
+    if not webhook_url:
+        st.error("⚠️ Please paste your n8n Webhook URL in the sidebar.")
+        return
     
+    # Build conversation history (memory)
+    history = build_history_messages(st.session_state.game_log)
+    
+    # Build the latest input — what happened last, or a kickoff prompt
+    if st.session_state.game_log:
+        latest_input = st.session_state.game_log[-1]["content"]
+    else:
+        latest_input = (
+            f"Begin the adventure! Set the scene, describe the environment vividly, "
+            f"and introduce a hook that draws the players in. "
+            f"Address the player characters by name and involve them."
+        )
+
+    # Gather ALL party stats for context
+    party_info = []
+    for a in agents:
+        if a.sheet:
+            party_info.append({
+                "name": a.name,
+                "class": a.sheet.class_name,
+                "hp": a.sheet.current_hp,
+                "max_hp": a.sheet.max_hp,
+                "ac": a.sheet.armor_class
+            })
+
     # 1. Prepare Payload for n8n
-    # We send the RAW model ID (e.g., 'openai/gpt-4o') so n8n just uses it
     payload = {
         "role": current_agent.role,
-        "model_id": current_agent.model_key, 
+        "model_id": current_agent.model_key,
         "char_name": current_agent.name,
         "char_class": current_agent.sheet.class_name if current_agent.sheet else "DM",
         "stats": current_agent.get_stats_json(),
-        "context_summary": "The party has entered a dark cave. A goblin is watching.", # Simplification
-        "latest_input": st.session_state.game_log[-1]["content"] if st.session_state.game_log else "Start the adventure."
+        "adventure_context": adventure,
+        "party_info": party_info,
+        "conversation_history": history,
+        "latest_input": latest_input
     }
 
     # 2. Call n8n
     try:
-        with st.spinner(f"{current_agent.name} is thinking..."):
-            response = httpx.post(webhook_url, json=payload, timeout=60)
+        with st.spinner(f"🧠 {current_agent.name} is thinking..."):
+            response = httpx.post(webhook_url, json=payload, timeout=90)
+            
             if response.status_code == 200:
-                content = response.json().get("content", "")
+                # Safely parse JSON
+                try:
+                    data = response.json()
+                    content = data.get("content", "") or data.get("message", "")
+                    if not content:
+                        content = f"⚠️ n8n returned JSON but no 'content' key. Keys: {list(data.keys())}. Data: {str(data)[:300]}"
+                except (json.JSONDecodeError, ValueError):
+                    # n8n returned non-JSON — show debug info
+                    raw = response.text[:500]
+                    ct = response.headers.get('content-type', 'unknown')
+                    if not raw.strip():
+                        content = (
+                            f"⚠️ n8n returned an empty response (content-type: {ct}). "
+                            f"This usually means the workflow errored before reaching the Respond node. "
+                            f"Check the n8n execution log for errors."
+                        )
+                    else:
+                        content = f"⚠️ n8n returned non-JSON (content-type: {ct}): {raw}"
             else:
-                content = f"Error from n8n: {response.status_code}"
+                raw = response.text[:300]
+                content = f"⚠️ n8n error {response.status_code}: {raw}"
+    except httpx.TimeoutException:
+        content = "⏱️ Request timed out — is the n8n workflow active?"
+    except httpx.ConnectError:
+        content = "🔌 Cannot connect — check your webhook URL and that n8n is running."
     except Exception as e:
-        content = f"Connection Failed: {str(e)}"
+        content = f"❌ Connection Failed: {str(e)}"
 
     # 3. Update State
     st.session_state.game_log.append({
