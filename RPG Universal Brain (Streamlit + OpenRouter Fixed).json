@@ -1,0 +1,283 @@
+{
+  "name": "RPG Universal Brain (Streamlit + OpenRouter Fixed)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rpg-turn",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "8a4664d2-499d-46c8-a579-6fb24d3d73ea",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        1776,
+        3040
+      ],
+      "webhookId": "dd8f39ff-1d9f-42a8-b982-0a34fae28d18"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body?.role || $json.role }}",
+                    "rightValue": "DM",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "DM"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body?.role || $json.role }}",
+                    "rightValue": "PLAYER",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "PLAYER"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1ae75709-b5c6-487b-864a-45350acd3e14",
+      "name": "Router (Role)",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2032,
+        3040
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst body = raw.body || raw;\n\n// Build rich party summary\nconst partyInfo = (body.party_info || []).map(p =>\n  `- ${p.name} (${p.class}): HP ${p.hp}/${p.max_hp}, AC ${p.ac}`\n).join('\\n');\n\n// Build monster summary\nconst monsterInfo = (body.monster_info || []).map(m =>\n  `- ${m.name}: HP ${m.hp}/${m.max_hp}, AC ${m.ac}, Damage ${m.damage}`\n).join('\\n');\n\nconst systemPrompt = `You are an expert Dungeon Master running a D&D 5e game.\n\n## Your Role\n- Narrate vivid, immersive scenes with sensory details\n- Control NPCs, monsters, and the environment\n- Follow D&D 5e rules for combat, skill checks, and encounters\n- React to player actions with consequences\n- Introduce monsters by name (e.g. \"two Goblins\", \"an Orc\", \"the Dire Wolf\")\n- When monsters attack, ALWAYS write it as: \"[Monster Name] attacks [Player Name]\"\n- Example: \"Goblin 1 attacks Thorin\", \"Orc attacks Elara\"\n\n## Adventure Setting\n${body.adventure_context || 'A classic D&D adventure begins.'}\n\n## Current Party\n${partyInfo || 'No party info available.'}\n\n## Active Monsters\n${monsterInfo || 'No monsters currently in play.'}\n\n## Rules\n- Keep responses to 2-3 paragraphs max\n- End each turn by prompting the players to act\n- If this is the first turn, set the scene dramatically and hook the players in\n- Address player characters by name\n- When describing monster attacks, always use the exact format: \"[Name] attacks [Target]\"`;\n\nconst messages = [{ role: 'system', content: systemPrompt }];\nconst history = body.conversation_history || [];\nfor (const msg of history) {\n  messages.push({\n    role: msg.role === 'assistant' ? 'assistant' : 'user',\n    content: `[${msg.name}]: ${msg.content}`\n  });\n}\nmessages.push({ role: 'user', content: body.latest_input || 'Begin the adventure!' });\n\nreturn { json: { model_id: body.model_id || 'anthropic/claude-3.5-sonnet', messages } };"
+      },
+      "id": "77b5e3f9-5caa-4e65-9e2b-0f3676f49286",
+      "name": "Build DM Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2272,
+        2912
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst body = raw.body || raw;\n\n// Build monster summary for player awareness\nconst monsterInfo = (body.monster_info || []).map(m =>\n  `- ${m.name}: HP ${m.hp}/${m.max_hp}, AC ${m.ac}`\n).join('\\n');\n\nconst systemPrompt = `You are a D&D 5e Player Character.\n\n## Your Character\n- Name: ${body.char_name || 'Adventurer'}\n- Class: ${body.char_class || 'Fighter'}\n- HP: ${body.stats?.hp || '?'}/${body.stats?.max_hp || '?'}\n- AC: ${body.stats?.ac || '?'}\n- STR: ${body.stats?.str || '?'}, DEX: ${body.stats?.dex || '?'}, CON: ${body.stats?.con || '?'}\n- WIS: ${body.stats?.wis || '?'}, INT: ${body.stats?.int || '?'}, CHA: ${body.stats?.cha || '?'}\n\n## Enemies in Play\n${monsterInfo || 'No enemies visible.'}\n\n## Your Behavior\n- Stay in character at all times\n- React to the DM narration with specific actions\n- When attacking, ALWAYS write: \"[Your Name] attacks [Target Name]\"\n- Example: \"Thorin attacks Goblin 1\"\n- Be creative and tactical in combat\n- Roleplay dialogue in first person\n- Keep responses to 1-2 paragraphs\n- State your intended action clearly`;\n\nconst messages = [{ role: 'system', content: systemPrompt }];\nconst history = body.conversation_history || [];\nfor (const msg of history) {\n  messages.push({\n    role: msg.role === 'assistant' ? 'assistant' : 'user',\n    content: `[${msg.name}]: ${msg.content}`\n  });\n}\nmessages.push({ role: 'user', content: body.latest_input || 'What do you do?' });\n\nreturn { json: { model_id: body.model_id || 'openai/gpt-4o', messages } };"
+      },
+      "id": "8fbc9440-2073-41b4-ab83-e50dab354286",
+      "name": "Build Player Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2272,
+        3152
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.OPENROUTER_API_KEY.replace('Bearer ', '') }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "HTTP-Referer",
+              "value": "http://localhost:8501"
+            },
+            {
+              "name": "X-Title",
+              "value": "DnD-Streamlit-App"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model_id, messages: $json.messages }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "fa928a47-e0cb-4d42-8995-5e5fe278b832",
+      "name": "Call OpenRouter (Fixed)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2576,
+        3040
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "McmybpYTCx0clZCI",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nlet content = '';\n\nif (data.choices && data.choices[0] && data.choices[0].message) {\n  content = data.choices[0].message.content;\n} else if (data.error) {\n  content = '⚠️ OpenRouter error: ' + (data.error.message || JSON.stringify(data.error));\n} else {\n  content = '⚠️ Unexpected response from OpenRouter: ' + JSON.stringify(data).substring(0, 300);\n}\n\nreturn { json: { content } };"
+      },
+      "id": "2e57e52d-c95e-4328-8690-7bd60a93eece",
+      "name": "Extract Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2832,
+        3040
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ content: $json.content }) }}",
+        "options": {}
+      },
+      "id": "6c90128d-4482-4866-82e3-fbf10a7875b0",
+      "name": "Respond to App",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3072,
+        3040
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Router (Role)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Router (Role)": {
+      "main": [
+        [
+          {
+            "node": "Build DM Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Player Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build DM Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call OpenRouter (Fixed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Player Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call OpenRouter (Fixed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call OpenRouter (Fixed)": {
+      "main": [
+        [
+          {
+            "node": "Extract Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Content": {
+      "main": [
+        [
+          {
+            "node": "Respond to App",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "executionTimeout": -1
+  },
+  "versionId": "15301bff-fb20-47e4-8843-915a371296f3",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a03845b98bc6a8f9f58a7c2a4a2c30a7e78adbe4876fceeaf0efc46311ff545c"
+  },
+  "id": "KfjO8JzJMZkHypU8",
+  "tags": []
+}
