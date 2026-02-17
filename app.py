@@ -532,6 +532,24 @@ def process_ai_turn(current_agent):
     st.session_state.turn_idx += 1
 
 
+def run_ai_chain():
+    """Process all consecutive AI turns until the next human agent or a full round.
+    This is the key fix: AI agents never require a manual click."""
+    safety = 0  # prevent infinite loops
+    max_chain = len(agents) + 1  # at most one full round
+    while safety < max_chain:
+        safety += 1
+        current = get_current_agent()
+        if current.is_human:
+            # Stop chaining — it's a human's turn
+            break
+        if not webhook_url:
+            st.error("⚠️ Please paste your n8n Webhook URL in the sidebar.")
+            break
+        time.sleep(1.5)  # small pause so chat feels natural
+        process_ai_turn(current)
+
+
 def process_human_input(text):
     """Handle a human player/DM submitting text."""
     current_agent = agents[st.session_state.human_agent_idx]
@@ -548,6 +566,9 @@ def process_human_input(text):
     st.session_state.turn_idx += 1
     st.session_state.waiting_for_human = False
     st.session_state.human_agent_idx = None
+
+    # After human submits, auto-chain through all following AI turns
+    run_ai_chain()
 
 
 # ── Human input area ──
@@ -569,7 +590,9 @@ else:
             st.session_state.human_agent_idx = st.session_state.turn_idx % len(agents)
             st.rerun()
         else:
+            # Process this AI turn AND all consecutive AI turns after it
             process_ai_turn(current_agent)
+            run_ai_chain()  # continue through any remaining AI agents
             st.rerun()
 
     auto = c2.toggle("🔄 Auto-Play", value=st.session_state.auto_play, key="auto_toggle")
@@ -582,11 +605,12 @@ else:
     # Auto-play logic
     if st.session_state.auto_play:
         if current_agent.is_human:
-            # Pause auto-play and wait for human
+            # Pause auto-play and wait for human input
             st.session_state.waiting_for_human = True
             st.session_state.human_agent_idx = st.session_state.turn_idx % len(agents)
             st.rerun()
         else:
             time.sleep(2)
             process_ai_turn(current_agent)
+            run_ai_chain()  # chain remaining AI agents
             st.rerun()
